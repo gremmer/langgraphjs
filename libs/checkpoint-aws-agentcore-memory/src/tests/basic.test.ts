@@ -1,6 +1,19 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { AgentCoreMemorySaver } from "../saver.js";
 import { AgentCoreMemoryStore } from "../store.js";
+
+const mockSend = vi.fn();
+
+vi.mock("@aws-sdk/client-bedrock-agentcore", () => ({
+  BedrockAgentCoreClient: vi
+    .fn()
+    .mockImplementation(() => ({ send: mockSend })),
+  CreateEventCommand: vi.fn(),
+  ListEventsCommand: vi.fn(),
+  DeleteEventCommand: vi.fn(),
+  ListSessionsCommand: vi.fn(),
+  ListActorsCommand: vi.fn(),
+}));
 
 describe("AgentCoreMemory Implementation", () => {
   let memoryId: string;
@@ -8,7 +21,10 @@ describe("AgentCoreMemory Implementation", () => {
   let store: AgentCoreMemoryStore;
 
   beforeEach(() => {
-    memoryId = `test-mem-${Date.now()}-${Math.random().toString(36).substring(2, 12)}`;
+    mockSend.mockResolvedValue({});
+    memoryId = `test-mem-${Date.now()}-${Math.random()
+      .toString(36)
+      .substring(2, 12)}`;
     saver = new AgentCoreMemorySaver({ memoryId, region: "us-east-1" });
     store = new AgentCoreMemoryStore({ memoryId, region: "us-east-1" });
   });
@@ -28,7 +44,7 @@ describe("AgentCoreMemory Implementation", () => {
 
     it("should reject invalid thread_id (sessionId) format", async () => {
       await expect(
-        saver.getTuple({ configurable: { thread_id: "invalid_id" } })
+        saver.getTuple({ configurable: { thread_id: "invalid id" } })
       ).rejects.toThrow(/Invalid thread_id/);
 
       await expect(
@@ -37,23 +53,29 @@ describe("AgentCoreMemory Implementation", () => {
     });
 
     it("should reject invalid actor_id format", async () => {
-      // Single char fails: pattern requires at least 2 chars
+      // Empty string fails: pattern requires at least 1 chars
       await expect(
         saver.getTuple({
-          configurable: { thread_id: "valid-thread", actor_id: "a" },
+          configurable: { thread_id: "valid-thread", actor_id: "" },
         })
       ).rejects.toThrow(/Invalid actor_id/);
 
       // Space is not in the allowed charset
       await expect(
         saver.getTuple({
-          configurable: { thread_id: "valid-thread", actor_id: "invalid actor" },
+          configurable: {
+            thread_id: "valid-thread",
+            actor_id: "invalid actor",
+          },
         })
       ).rejects.toThrow(/Invalid actor_id/);
 
       await expect(
         saver.getTuple({
-          configurable: { thread_id: "valid-thread", actor_id: "a".repeat(256) },
+          configurable: {
+            thread_id: "valid-thread",
+            actor_id: "a".repeat(256),
+          },
         })
       ).rejects.toThrow(/at most 255/);
     });
@@ -76,14 +98,38 @@ describe("AgentCoreMemory Implementation", () => {
       expect(store).toBeInstanceOf(AgentCoreMemoryStore);
     });
 
-    it("should throw descriptive error on start() with invalid memoryId", async () => {
-      const badStore = new AgentCoreMemoryStore({
-        memoryId: "valid-format-id-XXXXXXXXXX",
-        region: "us-east-1",
+    describe("start()", () => {
+      it("resolves when ListActors succeeds", async () => {
+        await expect(store.start()).resolves.toBeUndefined();
       });
-      await expect(badStore.start()).rejects.toThrow(
-        /AgentCore Memory resource not found|Invalid memoryId|credentials|actorId/i
-      );
+
+      it("throws descriptive error on ResourceNotFoundException", async () => {
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error("not found"), {
+            name: "ResourceNotFoundException",
+          })
+        );
+        await expect(store.start()).rejects.toThrow(
+          /AgentCore Memory resource not found/
+        );
+      });
+
+      it("throws descriptive error on ValidationException", async () => {
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error("invalid format"), {
+            name: "ValidationException",
+          })
+        );
+        await expect(store.start()).rejects.toThrow(/Invalid memoryId/);
+      });
+
+      it("re-throws unrecognized errors", async () => {
+        const err = Object.assign(new Error("network error"), {
+          name: "NetworkError",
+        });
+        mockSend.mockRejectedValueOnce(err);
+        await expect(store.start()).rejects.toThrow("network error");
+      });
     });
 
     it("should handle batch operations", async () => {
@@ -127,7 +173,7 @@ describe("AgentCoreMemory Implementation", () => {
       let capturedOp: unknown;
       const originalBatch = store.batch.bind(store);
       store.batch = async (ops) => {
-        capturedOp = ops[0];
+        capturedOp = ops.at(0);
         // Don't actually call AWS — just verify routing
         return [undefined] as never;
       };
@@ -146,11 +192,16 @@ describe("AgentCoreMemory Implementation", () => {
     it("should route listNamespaces via batch as ListNamespacesOperation", async () => {
       let capturedOp: unknown;
       store.batch = async (ops) => {
-        capturedOp = ops[0];
+        capturedOp = ops.at(0);
         return [[]] as never;
       };
 
-      await store.listNamespaces({ prefix: ["a", "b"], maxDepth: 3, limit: 5, offset: 0 });
+      await store.listNamespaces({
+        prefix: ["a", "b"],
+        maxDepth: 3,
+        limit: 5,
+        offset: 0,
+      });
 
       expect(capturedOp).toMatchObject({
         limit: 5,
