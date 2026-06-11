@@ -1,7 +1,10 @@
-import { describe } from "vitest";
+import { it } from "vitest";
 import initializer from "./agentcore_initializer.js";
-import { validate } from "../index.js";
+import { specTest } from "../spec/index.js";
+import { isSkippedCIEnvironment } from "./utils.js";
 
-describe("AgentCore Memory Checkpointer", () => {
-  validate(initializer);
-});
+if (isSkippedCIEnvironment()) {
+  it.skip(`${initializer.checkpointerName} skipped in CI because no Amazon Bedrock AgentCore Memory is available`, () => {});
+} else {
+  specTest(initializer);
+}

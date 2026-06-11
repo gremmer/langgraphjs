@@ -38,7 +38,6 @@
     "@smithy/util-retry": "^3.0.0"
   },
   "devDependencies": {
-    "@langchain/langgraph-checkpoint-validation": "workspace:*",
     "@typescript-eslint/eslint-plugin": "^6.12.0",
     "@typescript-eslint/parser": "^6.12.0",
     "dotenv": "^16.0.0",
