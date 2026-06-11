@@ -22,18 +22,30 @@ import {
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { ConfiguredRetryStrategy } from "@smithy/util-retry";
 
-// AgentCore Memory API field constraints (from CreateEvent docs)
-const SESSION_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9-]*$/;
+// AgentCore Memory API field constraints
+// Ref: https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_SessionSummary.html
+const SESSION_ID_RE_LITERAL = "[a-zA-Z0-9][a-zA-Z0-9-_]*";
+const SESSION_ID_RE = new RegExp(`^${SESSION_ID_RE_LITERAL}$`);
+const SESSION_ID_MIN = 1;
 const SESSION_ID_MAX = 100;
-const ACTOR_ID_RE =
-  /^[a-zA-Z0-9][a-zA-Z0-9-/](?::[a-zA-Z0-9-_/]+)*[a-zA-Z0-9-_/]*$/;
+
+// Ref: https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_ActorSummary.html
+const ACTOR_ID_RE_LITERAL =
+  "[a-zA-Z0-9][a-zA-Z0-9-_/]*(?::[a-zA-Z0-9-_/]+)*[a-zA-Z0-9-_/]*";
+const ACTOR_ID_RE = new RegExp(`^${ACTOR_ID_RE_LITERAL}$`);
+const ACTOR_ID_MIN = 1;
 const ACTOR_ID_MAX = 255;
 
 function validateSessionId(value: string, context: string): void {
   if (!SESSION_ID_RE.test(value)) {
     throw new Error(
-      `Invalid ${context} "${value}": sessionId must match [a-zA-Z0-9][a-zA-Z0-9-]* ` +
+      `Invalid ${context} "${value}": sessionId must match ${SESSION_ID_RE_LITERAL} ` +
         `(only alphanumeric and hyphens, must start with alphanumeric)`
+    );
+  }
+  if (value.length < SESSION_ID_MIN) {
+    throw new Error(
+      `Invalid ${context} "${value}": sessionId must be at least ${SESSION_ID_MIN} characters`
     );
   }
   if (value.length > SESSION_ID_MAX) {
@@ -48,6 +60,11 @@ function validateActorId(value: string, context: string): void {
     throw new Error(
       `Invalid ${context} "${value}": actorId must match ` +
         `[a-zA-Z0-9][a-zA-Z0-9-/](?::[a-zA-Z0-9-_/]+)*[a-zA-Z0-9-_/]*`
+    );
+  }
+  if (value.length < ACTOR_ID_MIN) {
+    throw new Error(
+      `Invalid ${context} "${value}": actorId must be at least ${ACTOR_ID_MIN} characters`
     );
   }
   if (value.length > ACTOR_ID_MAX) {
@@ -143,7 +160,7 @@ export class AgentCoreMemorySaver extends BaseCheckpointSaver {
 
   private getActorId(config: RunnableConfig): string | undefined {
     const actorId = config.configurable?.actor_id;
-    if (actorId) {
+    if (typeof actorId === "string") {
       validateActorId(actorId, "actor_id");
       return actorId;
     }
@@ -341,9 +358,15 @@ export class AgentCoreMemorySaver extends BaseCheckpointSaver {
     allWrites: Map<string, StoredWrite[]>
   ): Promise<void> {
     let nextToken: string | undefined;
-    const filter = checkpointNs !== undefined
-      ? { branch: { name: this.checkpointNsToBranch(checkpointNs), includeParentBranches: false } }
-      : undefined;
+    const filter =
+      checkpointNs !== undefined
+        ? {
+            branch: {
+              name: this.checkpointNsToBranch(checkpointNs),
+              includeParentBranches: false,
+            },
+          }
+        : undefined;
 
     // Paginate through all events for this session
     do {
@@ -851,7 +874,9 @@ export class AgentCoreMemorySaver extends BaseCheckpointSaver {
 
       // For non-main branches, provide rootEventId to bootstrap the branch.
       // getRootEventId() always returns a value, creating an anchor event if needed.
-      let branchInput: { name: string; rootEventId?: string } = { name: branchName };
+      const branchInput: { name: string; rootEventId?: string } = {
+        name: branchName,
+      };
       if (branchName !== "main") {
         branchInput.rootEventId = await this.getRootEventId(sessionId, actorId);
       }
@@ -946,9 +971,14 @@ export class AgentCoreMemorySaver extends BaseCheckpointSaver {
         ).join("");
         const blobData = btoa(binaryString);
 
-        let branchInput: { name: string; rootEventId?: string } = { name: branchName };
+        const branchInput: { name: string; rootEventId?: string } = {
+          name: branchName,
+        };
         if (branchName !== "main") {
-          branchInput.rootEventId = await this.getRootEventId(sessionId, actorId);
+          branchInput.rootEventId = await this.getRootEventId(
+            sessionId,
+            actorId
+          );
         }
 
         await this.client.send(
