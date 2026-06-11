@@ -2,7 +2,7 @@
 
 "use client";
 
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { BaseMessage } from "@langchain/core/messages";
 import type {
   MessageMetadata,
@@ -12,6 +12,7 @@ import type {
 } from "@langchain/langgraph-sdk/stream";
 import {
   NAMESPACE_SEPARATOR,
+  acquireChannelEffect,
   audioProjection,
   channelProjection,
   extensionProjection,
@@ -24,6 +25,7 @@ import {
   type AssembledToolCall,
   type AudioMedia,
   type Channel,
+  type ChannelEffectOptions,
   type ChannelProjectionOptions,
   type Event,
   type FileMedia,
@@ -37,6 +39,7 @@ import {
 import {
   getRegistry,
   STREAM_CONTROLLER,
+  type AnyStream,
   type UseStreamReturn,
 } from "./use-stream.js";
 import { useProjection } from "./use-projection.js";
@@ -82,6 +85,43 @@ function resolveNamespace(target: SelectorTarget): readonly string[] {
   return obj.namespace ?? EMPTY_NAMESPACE;
 }
 
+/**
+ * If `target` is a subagent snapshot still on its default
+ * `tools:<toolCallId>` namespace, return that tool-call id so the
+ * caller can trigger lazy execution-namespace resolution. Returns
+ * `null` for root targets, subgraph hosts, explicit namespaces, and
+ * already-promoted subagents.
+ */
+function subagentNeedingNamespace(target: SelectorTarget): string | null {
+  if (target == null || Array.isArray(target)) return null;
+  const obj = target as { id?: unknown; namespace?: readonly string[] };
+  if (typeof obj.id !== "string" || !Array.isArray(obj.namespace)) return null;
+  if (obj.namespace.length === 1 && obj.namespace[0] === `tools:${obj.id}`) {
+    return obj.id;
+  }
+  return null;
+}
+
+/**
+ * Lazily resolve a subagent's execution namespace on the first scoped
+ * mount. Deep-agent subagents execute under a `tools:<uuid>` namespace
+ * distinct from their `tools:<toolCallId>` discovery key; until that is
+ * known a scoped `useMessages`/`useToolCalls` would target the wrong
+ * scope. The controller de-dupes and skips already-promoted ids, so
+ * this is safe to call from every consumer of the same subagent.
+ */
+function useResolveSubagentNamespace(
+  stream: AnyStream,
+  target: SelectorTarget
+): void {
+  const controller = stream[STREAM_CONTROLLER];
+  const toolCallId = subagentNeedingNamespace(target);
+  useEffect(() => {
+    if (toolCallId == null) return;
+    void controller.resolveSubagentNamespace(toolCallId);
+  }, [controller, toolCallId]);
+}
+
 const EMPTY_NAMESPACE: readonly string[] = [];
 
 function isRoot(namespace: readonly string[]): boolean {
@@ -92,21 +132,17 @@ function namespaceKey(namespace: readonly string[]): string {
   return namespace.join(NAMESPACE_SEPARATOR);
 }
 
-// The stream type we accept for selectors — purposely loose so
-// selector hooks remain callable from components that don't carry
-// the exact State/Interrupt/Configurable generics. We use `any` for
-// all three generics because `UseStreamReturn` is
-// invariant in `State` and `Configurable` (they flow through both
-// reader and writer positions), so a concrete
-// `useStream<typeof agent>()` handle wouldn't flow into
-// a `<object, unknown, object>` slot otherwise.
+// The stream type we accept for selectors — the public {@link AnyStream}
+// erased handle. It overrides the generic-computed covariant members
+// (`toolCalls`, `values`, `~stateType`) with their widest forms so a
+// concrete `useStream<typeof agent>()` handle flows in without an
+// `as AnyStream` cast (a bare `UseStreamReturn<any, any, any>` does not
+// — see the `AnyStream` definition in `use-stream.ts`).
 //
-// Typed selectors (`useValues<S>` etc.) use {@link StreamHandle}
-// above so the concrete `StateType` flows into the return; hooks
-// that don't depend on state (`useMessages`, `useAudio`, …) stay on
-// `AnyStream` for maximum flexibility.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyStream = UseStreamReturn<any, any, any>;
+// Typed selectors (`useValues<S>` etc.) use {@link StreamHandle} above
+// so the concrete `StateType` flows into the return; hooks that don't
+// depend on state (`useMessages`, `useAudio`, …) stay on `AnyStream`
+// for maximum flexibility.
 
 /**
  * Subscribe to a scoped `messages` stream. Pass `stream` and
@@ -133,6 +169,7 @@ export function useMessages(
   stream: AnyStream,
   target?: SelectorTarget
 ): BaseMessage[] {
+  useResolveSubagentNamespace(stream, target);
   const namespace = resolveNamespace(target);
   const key = `messages|${namespaceKey(namespace)}`;
   const registry = isRoot(namespace) ? null : getRegistry(stream);
@@ -174,6 +211,7 @@ export function useToolCalls(
   stream: AnyStream,
   target?: SelectorTarget
 ): AssembledToolCall[] {
+  useResolveSubagentNamespace(stream, target);
   const namespace = resolveNamespace(target);
   const key = `toolCalls|${namespaceKey(namespace)}`;
   const registry = isRoot(namespace) ? null : getRegistry(stream);
@@ -244,8 +282,13 @@ export function useValues(
 }
 
 /**
- * Subscribe to a `custom:<name>` stream extension — most-recent
+ * Subscribe to a `custom:<name>` stream extension — the most-recent
  * payload emitted by the transformer, scoped to the target namespace.
+ *
+ * Returns only the latest value and resumes across serial runs, so it is
+ * ideal for "current state" panels (progress, score, status). When you
+ * need the full history of events rather than just the latest payload,
+ * use {@link useChannel} instead.
  */
 export function useExtension<T = unknown>(
   stream: AnyStream,
@@ -262,12 +305,6 @@ export function useExtension<T = unknown>(
   );
 }
 
-/**
- * Raw-events escape hatch. Subscribes to one or more channels at a
- * namespace and returns a bounded buffer of raw protocol events.
- * Prefer {@link useMessages} / {@link useToolCalls} / {@link useValues}
- * for the common cases.
- */
 /**
  * Subscribe to a scoped audio-media stream. Returns an array of
  * {@link AudioMedia} handles, one per message containing at least one
@@ -359,6 +396,17 @@ const EMPTY_FILES: FileMedia[] = [];
 
 export type UseChannelOptions = ChannelProjectionOptions;
 
+/**
+ * Raw-events escape hatch. Subscribes to one or more channels at a
+ * namespace and returns a bounded buffer of raw protocol events.
+ *
+ * The buffer keeps accumulating across serial runs for the lifetime of
+ * the thread, so this is the hook to use for an event log / stream of a
+ * custom channel (e.g. `["custom:redaction-stats"]`). When you only need
+ * the latest payload of a single `custom:<name>` channel, prefer
+ * {@link useExtension}. For the common message/tool/value cases prefer
+ * {@link useMessages} / {@link useToolCalls} / {@link useValues}.
+ */
 export function useChannel(
   stream: AnyStream,
   channels: readonly Channel[],
@@ -377,6 +425,100 @@ export function useChannel(
 }
 
 const EMPTY_EVENTS: Event[] = [];
+
+/**
+ * Options for {@link useChannelEffect}. Extends the projection options
+ * (`bufferSize`, `replay`) with the per-event callback, an optional
+ * error sink, a `target` scope, and an `enabled` gate.
+ */
+export interface UseChannelEffectOptions extends ChannelEffectOptions {
+  /**
+   * Scope events to a subagent / subgraph / explicit namespace.
+   * Defaults to the root namespace.
+   */
+  target?: SelectorTarget;
+  /**
+   * Gate the subscription. When `false`, no subscription is opened and
+   * no events are delivered. Defaults to `true`. Flipping this lets you
+   * pause analytics (e.g. while the user is viewing a different thread)
+   * without unmounting.
+   */
+  enabled?: boolean;
+}
+
+/**
+ * Side-effect counterpart to {@link useChannel}. Instead of returning a
+ * buffer of events that re-renders the component, it invokes `onEvent`
+ * once per event for as long as the hook is mounted — the idiomatic
+ * place for analytics, logging, and other fire-and-forget side effects.
+ *
+ * ```tsx
+ * useChannelEffect(stream, ["lifecycle", "tools"], {
+ *   replay: false,
+ *   onEvent(event) {
+ *     sendAnalytics(event);
+ *   },
+ *   onError(error) {
+ *     logger.error(error);
+ *   },
+ * });
+ * ```
+ *
+ * Notes:
+ *  - `onEvent` / `onError` are read from a ref, so passing a fresh
+ *    closure each render is fine — it never re-subscribes.
+ *  - The underlying subscription is shared (ref-counted) with any
+ *    matching {@link useChannel} consumer, so you only ever pay for one
+ *    server subscription per channel set.
+ *  - `replay` defaults to `false` (live-only). Set it to `true` only if
+ *    you genuinely want to (re)process replayed history.
+ *  - Events buffered before the hook mounts are not re-delivered.
+ */
+export function useChannelEffect(
+  stream: AnyStream,
+  channels: readonly Channel[],
+  options: UseChannelEffectOptions
+): void {
+  const {
+    target,
+    enabled = true,
+    replay,
+    bufferSize,
+    onEvent,
+    onError,
+  } = options;
+
+  // Keep the latest callbacks in refs so re-renders that pass new inline
+  // closures never tear down and re-open the subscription.
+  const onEventRef = useRef(onEvent);
+  const onErrorRef = useRef(onError);
+  onEventRef.current = onEvent;
+  onErrorRef.current = onError;
+
+  useResolveSubagentNamespace(stream, target);
+
+  const namespace = resolveNamespace(target);
+  const channelKey = useMemo(() => [...channels].sort().join(","), [channels]);
+  const key = `channelEffect|${bufferSize ?? "default"}|${
+    (replay ?? false) ? "replay" : "live"
+  }|${channelKey}|${namespaceKey(namespace)}`;
+
+  const registry = getRegistry(stream);
+
+  useEffect(() => {
+    if (!enabled || registry == null) return undefined;
+    return acquireChannelEffect(registry, channels, namespace, {
+      replay,
+      bufferSize,
+      onEvent: (event) => onEventRef.current(event),
+      onError: (error) => onErrorRef.current?.(error),
+    });
+    // `channels` / `namespace` / `replay` / `bufferSize` are folded into
+    // `key`; callbacks live in refs. Re-subscribe only when the resolved
+    // scope or `enabled` changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registry, key, enabled]);
+}
 
 /**
  * Read metadata recorded for a specific message id — today exposes

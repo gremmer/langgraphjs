@@ -1,5 +1,21 @@
 # @langchain/langgraph-checkpoint-redis
 
+## 1.0.8
+
+### Patch Changes
+
+- [#2518](https://github.com/langchain-ai/langgraphjs/pull/2518) [`9182ea3`](https://github.com/langchain-ai/langgraphjs/commit/9182ea35ecc1f932eb864fa7dc4fb32a00c5f7d6) Thanks [@jackjin1997](https://github.com/jackjin1997)! - fix: `RedisSaver.putWrites` now honors `WRITES_IDX_MAP`, pinning special channels (`__error__`, `__scheduled__`, `__interrupt__`, `__resume__`) to fixed negative indices in their Redis key (`checkpoint_write:…:<idx>`) instead of the call-local ordinal. Previously a mixed `putWrites([[…regular…], [INTERRUPT, …]], taskId)` placed the INTERRUPT key at the positive idx of its position in the batch, where a peer task's regular write at the same idx would overwrite it via the unconditional `JSON.SET`. The conflict-resolution clause now matches Postgres / SQLite / MongoDB: unguarded `JSON.SET` when every write is a special channel, `JSON.SET … NX` (insert-or-ignore) otherwise.
+
+## 1.0.7
+
+### Patch Changes
+
+- [#2344](https://github.com/langchain-ai/langgraphjs/pull/2344) [`0125920`](https://github.com/langchain-ai/langgraphjs/commit/0125920a2c4a87dc1d66aaf541ea16146f8cf842) Thanks [@dependabot](https://github.com/apps/dependabot)! - chore(deps): bump uuid to 14.0.0 and keep checkpoint ID ordering stable
+
+  Bump `uuid` from 10.x/13.x to 14.0.0 across packages. Starting with uuid 11, `v6({ clockseq })` no longer advances the sub-millisecond time counter when an explicit `clockseq` is passed, so checkpoint IDs created within the same millisecond were ordered only by `clockseq`. Since checkpoint IDs are sorted lexicographically, this broke ordering — most visibly for the negative `clockseq` used by the first ("input") checkpoint, which sorted as the newest.
+
+  `uuid6()` now maintains its own monotonic `(msecs, nsecs)` clock (mirroring uuid 10's internal v1 behavior) so the time component is always strictly increasing and checkpoint ordering no longer depends on the `clockseq` value. `emptyCheckpoint()` also uses a non-negative `clockseq`.
+
 ## 1.0.6
 
 ### Patch Changes

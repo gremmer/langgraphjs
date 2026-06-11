@@ -1,5 +1,11 @@
 # @langchain/langgraph-ui
 
+## 1.3.0
+
+## 1.2.5
+
+## 1.2.4
+
 ## 1.2.3
 
 ### Patch Changes

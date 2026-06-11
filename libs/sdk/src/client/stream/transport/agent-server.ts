@@ -27,6 +27,7 @@ import type {
   Message,
   SubscribeParams,
 } from "@langchain/protocol";
+import type { AsyncCaller } from "../../../utils/async_caller.js";
 import { ProtocolSseTransportAdapter } from "./http.js";
 import { ProtocolWebSocketTransportAdapter } from "./websocket.js";
 import type {
@@ -51,6 +52,12 @@ export interface HttpAgentServerAdapterOptions {
    */
   fetch?: typeof fetch;
   /**
+   * Retries and concurrency for SSE/command HTTP. When omitted, requests
+   * use raw `fetch` with no automatic retries (same as constructing
+   * {@link ProtocolSseTransportAdapter} without this option).
+   */
+  asyncCaller?: AsyncCaller;
+  /**
    * Optional WebSocket factory. Supplying it flips the adapter into
    * WebSocket mode — SSE is bypassed entirely.
    */
@@ -60,10 +67,19 @@ export interface HttpAgentServerAdapterOptions {
 export class HttpAgentServerAdapter implements AgentServerAdapter {
   readonly threadId: string;
 
+  readonly apiUrl: string;
+
   readonly #delegate: TransportAdapter;
+
+  /**
+   * Thread-state reads are SSE-only. WebSocket delegates omit this so
+   * {@link StreamController} falls back to `client.threads.getState()`.
+   */
+  getState?: AgentServerAdapter["getState"];
 
   constructor(options: HttpAgentServerAdapterOptions) {
     this.threadId = options.threadId;
+    this.apiUrl = options.apiUrl;
     this.#delegate =
       options.webSocketFactory != null
         ? new ProtocolWebSocketTransportAdapter({
@@ -80,8 +96,14 @@ export class HttpAgentServerAdapter implements AgentServerAdapter {
             defaultHeaders: options.defaultHeaders,
             onRequest: options.onRequest,
             fetch: options.fetch,
+            asyncCaller: options.asyncCaller,
             paths: options.paths,
           });
+
+    if (options.webSocketFactory == null) {
+      const sse = this.#delegate as ProtocolSseTransportAdapter;
+      this.getState = sse.getState.bind(sse);
+    }
   }
 
   open(): Promise<void> {

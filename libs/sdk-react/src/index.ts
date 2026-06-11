@@ -26,6 +26,7 @@ export {
   useValues,
   useExtension,
   useChannel,
+  useChannelEffect,
   useAudio,
   useImages,
   useVideo,
@@ -35,6 +36,7 @@ export {
 } from "./selectors.js";
 export type {
   SelectorTarget,
+  UseChannelEffectOptions,
   UseSubmissionQueueReturn,
   SubmissionQueueEntry,
   SubmissionQueueSnapshot,
@@ -122,5 +124,6 @@ export {
   executeHeadlessTool,
   handleHeadlessToolInterrupt,
   headlessToolResumeCommand,
+  applyHeadlessToolResumeCommand,
   flushPendingHeadlessToolInterrupts,
 } from "@langchain/langgraph-sdk";

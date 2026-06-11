@@ -1,5 +1,44 @@
 # @langchain/langgraph-api
 
+## 1.3.0
+
+### Minor Changes
+
+- [#2505](https://github.com/langchain-ai/langgraphjs/pull/2505) [`cad31b4`](https://github.com/langchain-ai/langgraphjs/commit/cad31b42f001a87fcdf57c4c084c655c8762b6a5) Thanks [@christian-bromann](https://github.com/christian-bromann)! - Consolidate the protocol session's channel inference, channel-set validation, and namespace prefix matching onto the shared `@langchain/langgraph/stream` helpers instead of maintaining local copies. This removes duplicated logic across `session/index.mts`, `session/namespace.mts`, `session/internal-types.mts`, and `service.mts`.
+
+  This also aligns SSE event-sink filtering (`matchesSinkFilter`) with the WebSocket subscription matcher: both now normalize dynamic namespace suffixes (e.g. a `["fetcher"]` namespace filter matches an event emitted under `["fetcher:<uuid>"]`). Previously the SSE path used a stricter exact-segment match.
+
+  Because the session now imports `@langchain/langgraph/stream`, the `@langchain/langgraph` peer dependency floor is raised to `^1.3.6` (the first release that ships the `/stream` entrypoint).
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @langchain/langgraph-ui@1.3.0
+
+## 1.2.5
+
+### Patch Changes
+
+- [`658a076`](https://github.com/langchain-ai/langgraphjs/commit/658a076d5b50af9f5b96ab99f26ed629da6e182f) Thanks [@christian-bromann](https://github.com/christian-bromann)! - fix(langgraph): forward named custom stream channels consistently
+
+  Forward remote `StreamChannel` emissions as `custom:<name>` protocol events and normalize them back to custom-channel payloads in the API session. This aligns JavaScript stream-channel forwarding with the protocol subscription shape used by remote clients, so `custom:<name>` subscriptions receive extension channel data consistently.
+
+- Updated dependencies []:
+  - @langchain/langgraph-ui@1.2.5
+
+## 1.2.4
+
+### Patch Changes
+
+- [#2344](https://github.com/langchain-ai/langgraphjs/pull/2344) [`0125920`](https://github.com/langchain-ai/langgraphjs/commit/0125920a2c4a87dc1d66aaf541ea16146f8cf842) Thanks [@dependabot](https://github.com/apps/dependabot)! - chore(deps): bump uuid to 14.0.0 and keep checkpoint ID ordering stable
+
+  Bump `uuid` from 10.x/13.x to 14.0.0 across packages. Starting with uuid 11, `v6({ clockseq })` no longer advances the sub-millisecond time counter when an explicit `clockseq` is passed, so checkpoint IDs created within the same millisecond were ordered only by `clockseq`. Since checkpoint IDs are sorted lexicographically, this broke ordering — most visibly for the negative `clockseq` used by the first ("input") checkpoint, which sorted as the newest.
+
+  `uuid6()` now maintains its own monotonic `(msecs, nsecs)` clock (mirroring uuid 10's internal v1 behavior) so the time component is always strictly increasing and checkpoint ordering no longer depends on the `clockseq` value. `emptyCheckpoint()` also uses a non-negative `clockseq`.
+
+- Updated dependencies []:
+  - @langchain/langgraph-ui@1.2.4
+
 ## 1.2.3
 
 ### Patch Changes
